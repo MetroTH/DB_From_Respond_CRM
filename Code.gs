@@ -1,7 +1,7 @@
 /**
  * DB_From_Respond_CRM — Apps Script
  * ---------------------------------------------------------------------------
- * วัตถุประสงค์ : ดึงข้อมูลจากชีต "raw-respond" (DB01) ไปยังชีต "Filter" (DB02)
+ * วัตถุประสงค์ : ดึงข้อมูลจากชีต "raw-respond" (DB01) ไปยังชีต "Filter-raw-respond" (DB02)
  *
  * ตรรกะหลัก :
  *   - จัดกลุ่มตาม respond_id (คอลัมน์ C) แบบไม่ซ้ำ
@@ -10,7 +10,7 @@
  *   - เรียงผลลัพธ์ตาม Task_ID (วันที่/เวลา) จากเก่า → ใหม่
  *
  * โหมดการดึงข้อมูล :
- *   โหมด 1 : ดึงตั้งแต่ 1 ม.ค. 2569 (2026-01-01) จนถึงปัจจุบัน (สร้างใหม่ทั้งหมด)
+ *   โหมด 1 : ดึงข้อมูลทั้งหมดจาก DB01 จนถึงปัจจุบัน (สร้างใหม่ทั้งหมด)
  *   โหมด 2 : Manual incremental — ดึงเฉพาะข้อมูลใหม่กว่าล่าสุดใน DB02 แล้วรวมแบบไม่ซ้ำ
  *   โหมด 3 : Trigger อัตโนมัติทุกวัน เวลา 18:00 (Asia/Bangkok)
  * ---------------------------------------------------------------------------
@@ -18,11 +18,11 @@
 
 /* ===================== CONFIG ===================== */
 const CONFIG = {
-  SOURCE_SHEET: 'raw-respond',   // DB01
-  TARGET_SHEET: 'Filter',        // DB02
+  SOURCE_SHEET: 'raw-respond',          // DB01
+  TARGET_SHEET: 'Filter-raw-respond',   // DB02
   TIMEZONE: 'Asia/Bangkok',
-  // โหมด 1 : วันที่เริ่มต้น = 1 ม.ค. 2569 (ค.ศ. 2026)
-  MODE1_START_DATE: new Date(2026, 0, 1, 0, 0, 0),
+  // โหมด 1 : null = ไม่จำกัดวันเริ่มต้น (ดึงข้อมูลทั้งหมดจาก DB01)
+  MODE1_START_DATE: null,
   TRIGGER_HOUR: 18,              // 18:00 น.
 
   // คอลัมน์ที่ใช้เป็น "respond_id" (คีย์ dedup) และ "Task_ID" (คีย์เวลา/เรียงลำดับ)
@@ -73,7 +73,7 @@ const CONFIG = {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('🔄 Respond CRM')
-    .addItem('โหมด 1: ดึงทั้งหมด (ตั้งแต่ 1 ม.ค. 69)', 'runMode1_Full')
+    .addItem('โหมด 1: ดึงทั้งหมด (ทุกช่วงเวลา)', 'runMode1_Full')
     .addItem('โหมด 2: ดึงเพิ่ม (Manual incremental)', 'runMode2_Incremental')
     .addSeparator()
     .addItem('ตั้ง Trigger รายวัน 18:00', 'installDailyTrigger')
@@ -83,7 +83,7 @@ function onOpen() {
 
 /* ===================== MODE ENTRY POINTS ===================== */
 
-/** โหมด 1 : ดึงข้อมูลทั้งหมดตั้งแต่ 1 ม.ค. 2569 จนถึงปัจจุบัน (เขียนทับ DB02) */
+/** โหมด 1 : ดึงข้อมูลทั้งหมดจาก DB01 จนถึงปัจจุบัน (เขียนทับ DB02) */
 function runMode1_Full() {
   const result = buildFilter_({
     startDate: CONFIG.MODE1_START_DATE,
@@ -141,7 +141,7 @@ function buildFilter_(opts) {
   let existing = {};
   if (opts.incremental) {
     existing = readExisting_(dst);
-    if (existing.maxTask && existing.maxTask > lowerBound) {
+    if (existing.maxTask && (!lowerBound || existing.maxTask > lowerBound)) {
       // ดึงตั้งแต่ค่าล่าสุดเดิม (รวมค่าเท่ากันด้วย เผื่อมี record ใหม่ในวินาทีเดียวกัน)
       lowerBound = existing.maxTask;
     }
@@ -158,7 +158,7 @@ function buildFilter_(opts) {
 
     const taskDate = parseDate_(row[idxTask]);
     if (!taskDate) continue;                       // ไม่มีวันที่/เวลา → ข้าม
-    if (taskDate < opts.startDate) continue;       // ก่อนวันเริ่มต้น → ข้าม
+    if (opts.startDate && taskDate < opts.startDate) continue; // ก่อนวันเริ่มต้น → ข้าม (null = ไม่จำกัด)
     if (taskDate > now) continue;                  // อนาคต → ข้าม
 
     const key = String(respondId);
