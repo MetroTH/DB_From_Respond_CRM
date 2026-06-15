@@ -198,12 +198,13 @@ function buildFilter_(opts) {
       const taskDate = row._taskDate;
       const candidates = adsMap[respondId] || [];
 
-      // หา Ad ที่ใกล้ Task_ID ที่สุดใน ±7 วัน
+      // หา Ad ที่ Task_ID อยู่หลัง Ad Timestamp ไม่เกิน 7 วัน (นับจาก Ad เป็นจุดเริ่ม)
+      // เลือก Ad ที่อยู่ใกล้ Task_ID ที่สุด (diff น้อยที่สุด)
       let bestAd = null;
       let bestDiff = Infinity;
       for (let i = 0; i < candidates.length; i++) {
-        const diff = Math.abs(candidates[i]._tsDate - taskDate);
-        if (diff <= SEVEN_DAYS_MS && diff < bestDiff) {
+        const diff = taskDate - candidates[i]._tsDate; // บวก = ติดต่อหลัง Ad
+        if (diff >= 0 && diff <= SEVEN_DAYS_MS && diff < bestDiff) {
           bestDiff = diff;
           bestAd = candidates[i];
         }
