@@ -188,17 +188,29 @@ function buildFilter_(opts) {
     }
   }
 
-  // โหลด Ads map แล้ว enrich แต่ละ row
+  // โหลด Ads map แล้ว enrich แต่ละ row ด้วย Ad ที่ใกล้ที่สุดใน ±7 วัน
   const adsMap = loadAdsMap_();
+  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
   const output = Object.keys(latestByRespond)
     .map(function (k) {
       const row = latestByRespond[k];
-      const dateStr = Utilities.formatDate(row._taskDate, CONFIG.TIMEZONE, 'yyyy-MM-dd');
       const respondId = String(row[CONFIG.OUTPUT_COLUMNS.indexOf(CONFIG.KEY_RESPOND_ID)]);
-      const adsKey = respondId + '_' + dateStr;
-      const adsRow = adsMap[adsKey] || {};
+      const taskDate = row._taskDate;
+      const candidates = adsMap[respondId] || [];
+
+      // หา Ad ที่ใกล้ Task_ID ที่สุดใน ±7 วัน
+      let bestAd = null;
+      let bestDiff = Infinity;
+      for (let i = 0; i < candidates.length; i++) {
+        const diff = Math.abs(candidates[i]._tsDate - taskDate);
+        if (diff <= SEVEN_DAYS_MS && diff < bestDiff) {
+          bestDiff = diff;
+          bestAd = candidates[i];
+        }
+      }
+      bestAd = bestAd || {};
       CONFIG.ADS_COLUMNS.forEach(function (col) {
-        row.push(adsRow[col] !== undefined ? adsRow[col] : '');
+        row.push(bestAd[col] !== undefined ? bestAd[col] : '');
       });
       return row;
     })
@@ -311,8 +323,8 @@ function parseDate_(value) {
 }
 
 /**
- * อ่าน Ads sheet แล้วสร้าง map: "respond_id_yyyy-MM-dd" → { col: value, ... }
- * ถ้า respond_id เดียวกันมีหลาย ad ในวันเดียว → เก็บ Timestamp ล่าสุด
+ * อ่าน Ads sheet แล้วสร้าง map: respond_id → [ { _tsDate, col: value, ... }, ... ]
+ * เก็บทุก entry ต่อ respond_id เพื่อให้ค้นหา Ad ที่ใกล้ที่สุดใน ±7 วันได้
  */
 function loadAdsMap_() {
   const map = {};
@@ -338,17 +350,13 @@ function loadAdsMap_() {
       if (!respondId || respondId === '') continue;
       const tsDate = parseDate_(row[tsIdx]);
       if (!tsDate) continue;
-      const dateStr = Utilities.formatDate(tsDate, CONFIG.TIMEZONE, 'yyyy-MM-dd');
-      const key = respondId + '_' + dateStr;
-
-      // เก็บ Timestamp ล่าสุดของวัน ถ้ามี ad หลายรายการ
-      if (map[key] && map[key]._tsDate >= tsDate) continue;
 
       const entry = { _tsDate: tsDate };
       CONFIG.ADS_COLUMNS.forEach(function (col) {
         entry[col] = colIdx[col] !== undefined ? row[colIdx[col]] : '';
       });
-      map[key] = entry;
+      if (!map[respondId]) map[respondId] = [];
+      map[respondId].push(entry);
     }
   } catch (e) {
     Logger.log('loadAdsMap_ error: ' + e.message);
