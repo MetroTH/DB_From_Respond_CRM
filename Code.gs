@@ -4,8 +4,8 @@
  * วัตถุประสงค์ : ดึงข้อมูลจากชีต "raw-respond" (DB01) ไปยังชีต "Filter-raw-respond" (DB02)
  *
  * ตรรกะหลัก :
- *   - จัดกลุ่มตาม respond_id (คอลัมน์ C) แบบไม่ซ้ำ
- *   - แต่ละ respond_id เลือก row ที่ "แสดงล่าสุด" (Task_ID ใหม่ที่สุด) เป็นตัวแทน
+ *   - จัดกลุ่มตาม respond_id + วันที่ (คอลัมน์ C) แบบไม่ซ้ำ
+ *   - แต่ละ respond_id + วันที่ เลือก row ที่ "แสดงล่าสุดของวัน" (Task_ID ใหม่ที่สุดในวันนั้น) เป็นตัวแทน
  *   - คอลัมน์ B และ D–AE ดึงค่าจาก row ตัวแทนนั้น (Match กับ C)
  *   - เรียงผลลัพธ์ตาม Task_ID (วันที่/เวลา) จากเก่า → ใหม่
  *
@@ -161,9 +161,10 @@ function buildFilter_(opts) {
     if (opts.startDate && taskDate < opts.startDate) continue; // ก่อนวันเริ่มต้น → ข้าม (null = ไม่จำกัด)
     if (taskDate > now) continue;                  // อนาคต → ข้าม
 
-    const key = String(respondId);
+    // key = respond_id + วันที่ → เก็บเฉพาะล่าสุดของแต่ละวันต่อคน
+    const dateStr = Utilities.formatDate(taskDate, CONFIG.TIMEZONE, 'yyyy-MM-dd');
+    const key = String(respondId) + '_' + dateStr;
     const prev = latestByRespond[key];
-    // เลือก "ที่แสดงล่าสุด" = Task_ID ใหม่ที่สุด
     if (!prev || taskDate >= prev._taskDate) {
       latestByRespond[key] = buildOutputRow_(row, colIndex, taskDate);
       changed++;
@@ -246,7 +247,9 @@ function readExisting_(dst) {
     const taskDate = parseDate_(row[idxTask]);
     if (!taskDate) continue;
     row._taskDate = taskDate;
-    result.map[String(respondId)] = row;
+    const dateStr = Utilities.formatDate(taskDate, CONFIG.TIMEZONE, 'yyyy-MM-dd');
+    const key = String(respondId) + '_' + dateStr;
+    result.map[key] = row;
     if (!result.maxTask || taskDate > result.maxTask) result.maxTask = taskDate;
   }
   return result;
