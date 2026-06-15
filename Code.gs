@@ -29,6 +29,23 @@ const CONFIG = {
   KEY_RESPOND_ID: 'respond_id',
   KEY_TASK_ID: 'Task_ID',
 
+  // Ads Spreadsheet (From-Facebook Ads-Respon.io)
+  ADS_SPREADSHEET_ID: '19yN662iCppjMFJTONgZHpbQH4gOkUtDxUcvqYZyPcKw',
+  ADS_SHEET_NAME: 'Raw-data',
+  ADS_TIMESTAMP_COL: 'Timestamp',
+  ADS_RESPOND_ID_COL: 'respond_id',
+
+  // คอลัมน์ที่ดึงจาก Ads sheet มาเพิ่มใน DB02 (ต่อจาก AE → AF เป็นต้นไป)
+  ADS_COLUMNS: [
+    'Source',           // AF
+    'Sub Source',       // AG
+    'Ad campaign ID',   // AH
+    'Campaign name',    // AI
+    'Ad group ID',      // AJ
+    'Ad ID',            // AK
+    'Ad name'           // AL
+  ],
+
   /*
    * ลำดับคอลัมน์ผลลัพธ์ใน DB02 (A → AE)
    * ค่าแต่ละตัว = ชื่อ header ที่ตรงกับใน raw-respond (DB01)
@@ -171,9 +188,20 @@ function buildFilter_(opts) {
     }
   }
 
-  // แปลงเป็น array แล้วเรียงตาม Task_ID เก่า → ใหม่
+  // โหลด Ads map แล้ว enrich แต่ละ row
+  const adsMap = loadAdsMap_();
   const output = Object.keys(latestByRespond)
-    .map(function (k) { return latestByRespond[k]; })
+    .map(function (k) {
+      const row = latestByRespond[k];
+      const dateStr = Utilities.formatDate(row._taskDate, CONFIG.TIMEZONE, 'yyyy-MM-dd');
+      const respondId = String(row[CONFIG.OUTPUT_COLUMNS.indexOf(CONFIG.KEY_RESPOND_ID)]);
+      const adsKey = respondId + '_' + dateStr;
+      const adsRow = adsMap[adsKey] || {};
+      CONFIG.ADS_COLUMNS.forEach(function (col) {
+        row.push(adsRow[col] !== undefined ? adsRow[col] : '');
+      });
+      return row;
+    })
     .sort(function (a, b) { return a._taskDate - b._taskDate; });
 
   writeOutput_(dst, output);
@@ -218,25 +246,26 @@ function buildOutputRow_(srcRow, colIndex, taskDate) {
 
 /** เขียนผลลัพธ์ลงชีตปลายทาง (header + data) */
 function writeOutput_(dst, rows) {
+  const allCols = CONFIG.OUTPUT_COLUMNS.concat(CONFIG.ADS_COLUMNS);
   dst.clearContents();
-  dst.getRange(1, 1, 1, CONFIG.OUTPUT_COLUMNS.length).setValues([CONFIG.OUTPUT_COLUMNS]);
+  dst.getRange(1, 1, 1, allCols.length).setValues([allCols]);
   if (rows.length === 0) return;
-  const values = rows.map(function (r) { return r.slice(0, CONFIG.OUTPUT_COLUMNS.length); });
-  // คอลัมน์ A (Task_ID) เก็บเป็นข้อความ เพื่อให้แสดง yyyy-MM-dd HH:mm:ss คงรูป
+  const values = rows.map(function (r) { return r.slice(0, allCols.length); });
   const taskCol = CONFIG.OUTPUT_COLUMNS.indexOf(CONFIG.KEY_TASK_ID);
   if (taskCol > -1) {
     dst.getRange(2, taskCol + 1, values.length, 1).setNumberFormat('@');
   }
-  dst.getRange(2, 1, values.length, CONFIG.OUTPUT_COLUMNS.length).setValues(values);
+  dst.getRange(2, 1, values.length, allCols.length).setValues(values);
 }
 
-/** อ่านข้อมูลเดิมใน DB02 → map respond_id → row, และหา Task_ID ล่าสุด */
+/** อ่านข้อมูลเดิมใน DB02 → map respond_id+date → row, และหา Task_ID ล่าสุด */
 function readExisting_(dst) {
   const result = { map: {}, maxTask: null };
   const lastRow = dst.getLastRow();
   if (lastRow < 2) return result;
 
-  const values = dst.getRange(2, 1, lastRow - 1, CONFIG.OUTPUT_COLUMNS.length).getValues();
+  const totalCols = CONFIG.OUTPUT_COLUMNS.length + CONFIG.ADS_COLUMNS.length;
+  const values = dst.getRange(2, 1, lastRow - 1, totalCols).getValues();
   const idxRespond = CONFIG.OUTPUT_COLUMNS.indexOf(CONFIG.KEY_RESPOND_ID);
   const idxTask = CONFIG.OUTPUT_COLUMNS.indexOf(CONFIG.KEY_TASK_ID);
 
@@ -279,6 +308,52 @@ function parseDate_(value) {
 
   const d = new Date(s); // ISO และรูปแบบที่ JS เข้าใจ
   return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * อ่าน Ads sheet แล้วสร้าง map: "respond_id_yyyy-MM-dd" → { col: value, ... }
+ * ถ้า respond_id เดียวกันมีหลาย ad ในวันเดียว → เก็บ Timestamp ล่าสุด
+ */
+function loadAdsMap_() {
+  const map = {};
+  try {
+    const ss = SpreadsheetApp.openById(CONFIG.ADS_SPREADSHEET_ID);
+    const sheet = ss.getSheetByName(CONFIG.ADS_SHEET_NAME);
+    if (!sheet) return map;
+    const data = sheet.getDataRange().getValues();
+    if (data.length < 2) return map;
+
+    const header = data[0];
+    const colIdx = {};
+    for (let i = 0; i < header.length; i++) {
+      colIdx[String(header[i]).trim()] = i;
+    }
+    const tsIdx = colIdx[CONFIG.ADS_TIMESTAMP_COL];
+    const ridIdx = colIdx[CONFIG.ADS_RESPOND_ID_COL];
+    if (tsIdx === undefined || ridIdx === undefined) return map;
+
+    for (let r = 1; r < data.length; r++) {
+      const row = data[r];
+      const respondId = String(row[ridIdx]).trim();
+      if (!respondId || respondId === '') continue;
+      const tsDate = parseDate_(row[tsIdx]);
+      if (!tsDate) continue;
+      const dateStr = Utilities.formatDate(tsDate, CONFIG.TIMEZONE, 'yyyy-MM-dd');
+      const key = respondId + '_' + dateStr;
+
+      // เก็บ Timestamp ล่าสุดของวัน ถ้ามี ad หลายรายการ
+      if (map[key] && map[key]._tsDate >= tsDate) continue;
+
+      const entry = { _tsDate: tsDate };
+      CONFIG.ADS_COLUMNS.forEach(function (col) {
+        entry[col] = colIdx[col] !== undefined ? row[colIdx[col]] : '';
+      });
+      map[key] = entry;
+    }
+  } catch (e) {
+    Logger.log('loadAdsMap_ error: ' + e.message);
+  }
+  return map;
 }
 
 function notify_(title, msg) {
